@@ -8,7 +8,6 @@
   "url": "https://github.com/giannello/addon-warema-bridge",
   "boot": "auto",
   "hassio_api": true,
-  "image": "giannello/addon-warema-bridge",
   "options": {
     "wms_serial_port": null
   },
