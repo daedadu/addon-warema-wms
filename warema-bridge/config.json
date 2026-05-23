@@ -1,12 +1,12 @@
 {
   "name": "Warema Bridge",
-  "version": "dev",
+  "version": "0.2.0",
   "slug": "warema-bridge",
   "init": false,
   "description": "Control your Warema WMS system",
   "arch": ["aarch64", "amd64", "armv7", "i386"],
   "startup": "services",
-  "url": "https://github.com/giannello/addon-warema-bridge",
+  "url": "https://github.com/daedadu/addon-warema-wms",
   "boot": "auto",
   "hassio_api": true,
   "options": {

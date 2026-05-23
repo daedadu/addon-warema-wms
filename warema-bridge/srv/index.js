@@ -195,7 +195,7 @@ function registerDevice(element) {
 
         stickUsb.vnBlindAdd(parseInt(element.snr), element.snr.toString());
 
-        devices[element.snr] = {};
+        devices[element.snr] = { position: 0, angle: 0 };
 
         client.publish(availability_topic, 'online', {retain: true})
         client.publish(topic, JSON.stringify(payload), {retain: true})
@@ -222,9 +222,11 @@ function callback(err, msg) {
                 log.info('Scanned devices:\n' + JSON.stringify(msg.payload, null, 2));
                 if (forceDevices && forceDevices.length) {
                     forceDevices.forEach(deviceString => {
-                        const [snr, type] = deviceString.split(':');
-
-                        registerDevice({snr: snr, type: type || 25})
+                        const entry = deviceString.trim();
+                        const colon = entry.indexOf(':');
+                        const snr = colon >= 0 ? entry.slice(0, colon).trim() : entry.trim();
+                        const type = colon >= 0 ? entry.slice(colon + 1).trim() : '25';
+                        registerDevice({ snr: snr, type: type || '25' });
                     })
                 } else {
                     msg.payload.devices.forEach(element => registerDevice(element))
@@ -247,22 +249,25 @@ function callback(err, msg) {
             case 'wms-vb-blind-position-update':
                 log.debug('Position update: \n' + JSON.stringify(msg.payload, null, 2))
 
+                const snr = msg.payload.snr;
+                if (!devices[snr]) devices[snr] = { position: 0, angle: 0 };
+
                 if (typeof msg.payload.position !== "undefined") {
-                    devices[msg.payload.snr].position = msg.payload.position;
-                    client.publish('warema/' + msg.payload.snr + '/position', '' + msg.payload.position, {retain: true})
+                    devices[snr].position = msg.payload.position;
+                    client.publish('warema/' + snr + '/position', '' + msg.payload.position, {retain: true})
 
                     if (msg.payload.moving === false) {
                         if (msg.payload.position === 0)
-                            client.publish('warema/' + msg.payload.snr + '/state', 'open', {retain: true});
+                            client.publish('warema/' + snr + '/state', 'open', {retain: true});
                         else if (msg.payload.position === 100)
-                            client.publish('warema/' + msg.payload.snr + '/state', 'closed', {retain: true});
+                            client.publish('warema/' + snr + '/state', 'closed', {retain: true});
                         else
-                            client.publish('warema/' + msg.payload.snr + '/state', 'stopped', {retain: true});
+                            client.publish('warema/' + snr + '/state', 'stopped', {retain: true});
                     }
                 }
-                if (typeof msg.payload.tilt !== "undefined") {
-                    devices[msg.payload.snr].tilt = msg.payload.tilt;
-                    client.publish('warema/' + msg.payload.snr + '/tilt', '' + msg.payload.angle, {retain: true})
+                if (typeof msg.payload.angle !== "undefined") {
+                    devices[snr].angle = msg.payload.angle;
+                    client.publish('warema/' + snr + '/tilt', '' + msg.payload.angle, {retain: true})
                 }
                 break;
             default:
@@ -329,6 +334,7 @@ client.on('message', function (topic, message) {
     //scope === 'warema'
     switch (command) {
         case 'set':
+            const angle = devices[device]?.angle ?? 0;
             switch (message) {
                 case 'ON':
                 case 'OFF':
@@ -336,12 +342,12 @@ client.on('message', function (topic, message) {
                     break;
                 case 'CLOSE':
                     log.debug('Closing ' + device);
-                    stickUsb.vnBlindSetPosition(device, 100)
+                    stickUsb.vnBlindSetPosition(device, 100, angle);
                     client.publish('warema/' + device + '/state', 'closing');
                     break;
                 case 'OPEN':
                     log.debug('Opening ' + device);
-                    stickUsb.vnBlindSetPosition(device, 0);
+                    stickUsb.vnBlindSetPosition(device, 0, angle);
                     client.publish('warema/' + device + '/state', 'opening');
                     break;
                 case 'STOP':
@@ -351,12 +357,12 @@ client.on('message', function (topic, message) {
             }
             break;
         case 'set_position':
-            log.debug('Setting ' + device + ' to ' + message + '%, angle ' + devices[device].angle);
-            stickUsb.vnBlindSetPosition(device, parseInt(message), parseInt(devices[device]['angle']))
+            log.debug('Setting ' + device + ' to ' + message + '%, angle ' + (devices[device]?.angle ?? 0));
+            stickUsb.vnBlindSetPosition(device, parseInt(message), devices[device]?.angle ?? 0);
             break;
         case 'set_tilt':
-            log.debug('Setting ' + device + ' to ' + message + '°, position ' + devices[device].position);
-            stickUsb.vnBlindSetPosition(device, parseInt(devices[device]['position']), parseInt(message))
+            log.debug('Setting tilt ' + device + ' to ' + message + ', position ' + (devices[device]?.position ?? 0));
+            stickUsb.vnBlindSetPosition(device, devices[device]?.position ?? 0, parseInt(message));
             break;
         default:
             log.info('Unrecognised command from HA')
