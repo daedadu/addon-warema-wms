@@ -18,6 +18,8 @@ FROM ${BUILD_FROM}
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
+RUN apk add --no-cache nodejs
+
 WORKDIR /srv
 
 COPY --from=builder /build/node_modules ./node_modules

@@ -2,6 +2,7 @@
   "name": "Warema Bridge",
   "version": "dev",
   "slug": "warema-bridge",
+  "init": false,
   "description": "Control your Warema WMS system",
   "arch": ["aarch64", "amd64", "armv7", "i386"],
   "startup": "services",
