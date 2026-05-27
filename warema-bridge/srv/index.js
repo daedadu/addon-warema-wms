@@ -1,6 +1,7 @@
 const warema = require('./warema-wms-venetian-blinds');
 const log = require('./logger');
 const mqtt = require('mqtt');
+const angleUtil = require('./angle');
 
 process.on('SIGINT', function () {
     process.exit(0);
@@ -11,6 +12,7 @@ const ignoredDevices = process.env.IGNORED_DEVICES ? process.env.IGNORED_DEVICES
 const forceDevices = process.env.FORCE_DEVICES ? process.env.FORCE_DEVICES.split(',') : [];
 const pollingInterval = process.env.POLLING_INTERVAL || 30000;
 const movingInterval = process.env.MOVING_INTERVAL || 1000;
+const commandDebounceMs = parseInt(process.env.COMMAND_DEBOUNCE_MS || '200', 10);
 
 const settingsPar = {
     wmsChannel: process.env.WMS_CHANNEL || 17,
@@ -20,6 +22,53 @@ const settingsPar = {
 };
 
 const devices = [];
+const pendingTargets = {};
+
+function tiltDiscoveryFields(snr) {
+    return {
+        tilt_status_topic: 'warema/' + snr + '/tilt',
+        tilt_command_topic: 'warema/' + snr + '/set_tilt',
+        tilt_min: -angleUtil.DEG_MAX,
+        tilt_max: angleUtil.DEG_MAX,
+    };
+}
+
+function getDeviceState(device) {
+    if (!devices[device]) {
+        devices[device] = { position: 0, angle: 0 };
+    }
+    return devices[device];
+}
+
+function requestBlindMove(device, updates) {
+    const state = getDeviceState(device);
+
+    if (!pendingTargets[device]) {
+        pendingTargets[device] = {
+            position: state.position,
+            angle: state.angle,
+            timer: null,
+        };
+    }
+
+    const pending = pendingTargets[device];
+    if (updates.position !== undefined) {
+        pending.position = updates.position;
+        state.position = updates.position;
+    }
+    if (updates.angle !== undefined) {
+        pending.angle = updates.angle;
+        state.angle = updates.angle;
+    }
+
+    clearTimeout(pending.timer);
+    pending.timer = setTimeout(function () {
+        const target = pendingTargets[device];
+        delete pendingTargets[device];
+        log.debug('Moving ' + device + ' to position ' + target.position + ', angle ' + target.angle);
+        stickUsb.vnBlindSetPosition(device, target.position, target.angle);
+    }, commandDebounceMs);
+}
 
 function registerDevice(element) {
     log.info('Registering ' + element.snr)
@@ -120,13 +169,8 @@ function registerDevice(element) {
                 command_topic: 'warema/' + element.snr + '/set',
                 state_topic: 'warema/' + element.snr + '/state',
                 position_topic: 'warema/' + element.snr + '/position',
-                tilt_status_topic: 'warema/' + element.snr + '/tilt',
                 set_position_topic: 'warema/' + element.snr + '/set_position',
-                tilt_command_topic: 'warema/' + element.snr + '/set_tilt',
-                tilt_closed_value: -100,
-                tilt_opened_value: 100,
-                tilt_min: -100,
-                tilt_max: 100,
+                ...tiltDiscoveryFields(element.snr),
             }
             break;
         case 21:
@@ -141,13 +185,8 @@ function registerDevice(element) {
                 position_closed: 100,
                 command_topic: 'warema/' + element.snr + '/set',
                 position_topic: 'warema/' + element.snr + '/position',
-                tilt_status_topic: 'warema/' + element.snr + '/tilt',
                 set_position_topic: 'warema/' + element.snr + '/set_position',
-                tilt_command_topic: 'warema/' + element.snr + '/set_tilt',
-                tilt_closed_value: -100,
-                tilt_opened_value: 100,
-                tilt_min: -100,
-                tilt_max: 100,
+                ...tiltDiscoveryFields(element.snr),
             }
 
             break;
@@ -267,7 +306,7 @@ function callback(err, msg) {
                 }
                 if (typeof msg.payload.angle !== "undefined") {
                     devices[snr].angle = msg.payload.angle;
-                    client.publish('warema/' + snr + '/tilt', '' + msg.payload.angle, {retain: true})
+                    client.publish('warema/' + snr + '/tilt', '' + angleUtil.percentToDegrees(msg.payload.angle), {retain: true})
                 }
                 break;
             default:
@@ -334,7 +373,6 @@ client.on('message', function (topic, message) {
     //scope === 'warema'
     switch (command) {
         case 'set':
-            const angle = devices[device]?.angle ?? 0;
             switch (message) {
                 case 'ON':
                 case 'OFF':
@@ -342,27 +380,37 @@ client.on('message', function (topic, message) {
                     break;
                 case 'CLOSE':
                     log.debug('Closing ' + device);
-                    stickUsb.vnBlindSetPosition(device, 100, angle);
+                    requestBlindMove(device, {
+                        position: 100,
+                        angle: angleUtil.ANGLE_FULLY_CLOSED,
+                    });
                     client.publish('warema/' + device + '/state', 'closing');
                     break;
                 case 'OPEN':
                     log.debug('Opening ' + device);
-                    stickUsb.vnBlindSetPosition(device, 0, angle);
+                    requestBlindMove(device, {
+                        position: 0,
+                        angle: angleUtil.ANGLE_FULLY_OPEN,
+                    });
                     client.publish('warema/' + device + '/state', 'opening');
                     break;
                 case 'STOP':
                     log.debug('Stopping ' + device);
+                    if (pendingTargets[device]?.timer) {
+                        clearTimeout(pendingTargets[device].timer);
+                        delete pendingTargets[device];
+                    }
                     stickUsb.vnBlindStop(device);
                     break;
             }
             break;
         case 'set_position':
             log.debug('Setting ' + device + ' to ' + message + '%, angle ' + (devices[device]?.angle ?? 0));
-            stickUsb.vnBlindSetPosition(device, parseInt(message), devices[device]?.angle ?? 0);
+            requestBlindMove(device, { position: parseInt(message, 10) });
             break;
         case 'set_tilt':
-            log.debug('Setting tilt ' + device + ' to ' + message + ', position ' + (devices[device]?.position ?? 0));
-            stickUsb.vnBlindSetPosition(device, devices[device]?.position ?? 0, parseInt(message));
+            log.debug('Setting tilt ' + device + ' to ' + message + '°, position ' + (devices[device]?.position ?? 0));
+            requestBlindMove(device, { angle: angleUtil.degreesToPercent(parseInt(message, 10)) });
             break;
         default:
             log.info('Unrecognised command from HA')

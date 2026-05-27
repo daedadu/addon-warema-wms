@@ -888,6 +888,8 @@ class Stick {
         // . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
 
         if (blind) {
+            privateCmdQueueRemove(stickObj, "blindMoveToPos", blind.snr);
+
             blind.posRequested = new VnBlindPos(position, angle, true/*moving*/);
             privateCmdQueueEnqueue(stickObj, new wmsUtil.wmsMsgNew("blindMoveToPos", blind.snr, {
                 pos: position,
