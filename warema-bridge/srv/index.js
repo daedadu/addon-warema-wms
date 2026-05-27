@@ -1,7 +1,9 @@
 const warema = require('./warema-wms-venetian-blinds');
 const log = require('./logger');
 const mqtt = require('mqtt');
-const angleUtil = require('./angle');
+
+const ANGLE_FULLY_OPEN = -100;
+const ANGLE_FULLY_CLOSED = 100;
 
 process.on('SIGINT', function () {
     process.exit(0);
@@ -24,34 +26,13 @@ const settingsPar = {
 const devices = [];
 const pendingTargets = {};
 
-function registerSlatAngleNumber(snr, base_payload, base_device, model) {
-    const slat_payload = {
-        ...base_payload,
-        name: 'Slat angle',
-        unique_id: snr + '_slat',
-        object_id: snr + '_slat',
-        device: {
-            ...base_device,
-            model: model,
-        },
-        min: -angleUtil.DEG_MAX,
-        max: angleUtil.DEG_MAX,
-        step: angleUtil.DEG_STEP,
-        unit_of_measurement: '°',
-        state_topic: 'warema/' + snr + '/slat/state',
-        command_topic: 'warema/' + snr + '/slat/set',
+function tiltDiscoveryFields(snr) {
+    return {
+        tilt_status_topic: 'warema/' + snr + '/tilt',
+        tilt_command_topic: 'warema/' + snr + '/set_tilt',
+        tilt_min: -100,
+        tilt_max: 100,
     };
-
-    client.publish('homeassistant/number/' + snr + '/slat/config', JSON.stringify(slat_payload), {retain: true});
-}
-
-function publishSlatAngle(snr, anglePercent) {
-    client.publish('warema/' + snr + '/slat/state', '' + angleUtil.percentToDegrees(anglePercent), {retain: true});
-}
-
-function setSlatAngleFromDegrees(device, degrees) {
-    log.debug('Setting slat angle ' + device + ' to ' + degrees + '°, position ' + (devices[device]?.position ?? 0));
-    requestBlindMove(device, { angle: angleUtil.degreesToPercent(parseInt(degrees, 10)) });
 }
 
 function getDeviceState(device) {
@@ -191,6 +172,7 @@ function registerDevice(element) {
                 state_topic: 'warema/' + element.snr + '/state',
                 position_topic: 'warema/' + element.snr + '/position',
                 set_position_topic: 'warema/' + element.snr + '/set_position',
+                ...tiltDiscoveryFields(element.snr),
             }
             break;
         case 21:
@@ -206,6 +188,7 @@ function registerDevice(element) {
                 command_topic: 'warema/' + element.snr + '/set',
                 position_topic: 'warema/' + element.snr + '/position',
                 set_position_topic: 'warema/' + element.snr + '/set_position',
+                ...tiltDiscoveryFields(element.snr),
             }
 
             break;
@@ -257,10 +240,6 @@ function registerDevice(element) {
 
         client.publish(availability_topic, 'online', {retain: true})
         client.publish(topic, JSON.stringify(payload), {retain: true})
-
-        if (parseInt(element.type) === 20 || parseInt(element.type) === 21) {
-            registerSlatAngleNumber(element.snr, base_payload, base_device, model);
-        }
     }
 }
 
@@ -329,7 +308,7 @@ function callback(err, msg) {
                 }
                 if (typeof msg.payload.angle !== "undefined") {
                     devices[snr].angle = msg.payload.angle;
-                    publishSlatAngle(snr, msg.payload.angle);
+                    client.publish('warema/' + snr + '/tilt', '' + msg.payload.angle, {retain: true})
                 }
                 break;
             default:
@@ -370,7 +349,6 @@ client.on('connect', function () {
         'warema/+/set',
         'warema/+/set_position',
         'warema/+/set_tilt',
-        'warema/+/slat/set',
         'homeassistant/status'
     ]);
 })
@@ -380,17 +358,14 @@ client.on('error', function (error) {
 })
 
 client.on('message', function (topic, message) {
-    const parts = topic.split('/');
-    const scope = parts[0];
-    const device = parts[1];
-    const command = parts.slice(2).join('/');
+    let [scope, device, command] = topic.split('/');
     message = message.toString();
 
     log.debug('Received message on topic')
     log.debug('scope: ' + scope + ', device: ' + device + ', command: ' + command)
     log.debug('message: ' + message)
 
-    if (topic === 'homeassistant/status') {
+    if (scope === 'homeassistant' && command === 'status') {
         if (message === 'online') {
             log.info('Home Assistant is online');
         }
@@ -409,7 +384,7 @@ client.on('message', function (topic, message) {
                     log.debug('Closing ' + device);
                     requestBlindMove(device, {
                         position: 100,
-                        angle: angleUtil.ANGLE_FULLY_CLOSED,
+                        angle: ANGLE_FULLY_CLOSED,
                     });
                     client.publish('warema/' + device + '/state', 'closing');
                     break;
@@ -417,7 +392,7 @@ client.on('message', function (topic, message) {
                     log.debug('Opening ' + device);
                     requestBlindMove(device, {
                         position: 0,
-                        angle: angleUtil.ANGLE_FULLY_OPEN,
+                        angle: ANGLE_FULLY_OPEN,
                     });
                     client.publish('warema/' + device + '/state', 'opening');
                     break;
@@ -436,8 +411,8 @@ client.on('message', function (topic, message) {
             requestBlindMove(device, { position: parseInt(message, 10) });
             break;
         case 'set_tilt':
-        case 'slat/set':
-            setSlatAngleFromDegrees(device, message);
+            log.debug('Setting tilt ' + device + ' to ' + message + '°, position ' + (devices[device]?.position ?? 0));
+            requestBlindMove(device, { angle: parseInt(message, 10) });
             break;
         default:
             log.info('Unrecognised command from HA')
