@@ -15,6 +15,13 @@ const forceDevices = process.env.FORCE_DEVICES ? process.env.FORCE_DEVICES.split
 const pollingInterval = process.env.POLLING_INTERVAL || 30000;
 const movingInterval = process.env.MOVING_INTERVAL || 1000;
 const commandDebounceMs = parseInt(process.env.COMMAND_DEBOUNCE_MS || '200', 10);
+const commandMoveMaxRetries = parseInt(process.env.COMMAND_MOVE_MAX_RETRIES || '3', 10);
+const commandMoveGapMs = parseInt(process.env.COMMAND_MOVE_GAP_MS || '100', 10);
+const commandMoveConfirmTimeoutMs = parseInt(process.env.COMMAND_MOVE_CONFIRM_TIMEOUT_MS || '10000', 10);
+
+const moveQueue = [];
+let moveQueueBusy = false;
+let currentMove = null;
 
 const settingsPar = {
     wmsChannel: process.env.WMS_CHANNEL || 17,
@@ -42,6 +49,115 @@ function getDeviceState(device) {
     return devices[device];
 }
 
+function removeDeviceFromMoveQueue(device) {
+    for (let i = moveQueue.length - 1; i >= 0; i--) {
+        if (String(moveQueue[i].device) === String(device)) {
+            moveQueue.splice(i, 1);
+        }
+    }
+}
+
+function clearCurrentMoveConfirmTimer() {
+    if (currentMove?.confirmTimer) {
+        clearTimeout(currentMove.confirmTimer);
+        currentMove.confirmTimer = null;
+    }
+}
+
+function finishCurrentMove() {
+    clearCurrentMoveConfirmTimer();
+    currentMove = null;
+    moveQueueBusy = false;
+}
+
+function advanceMoveQueue() {
+    finishCurrentMove();
+    if (commandMoveGapMs > 0) {
+        setTimeout(processMoveQueue, commandMoveGapMs);
+    } else {
+        processMoveQueue();
+    }
+}
+
+function sendCurrentMove() {
+    if (!currentMove) {
+        return;
+    }
+
+    clearCurrentMoveConfirmTimer();
+    log.debug('Moving ' + currentMove.device + ' to position ' + currentMove.position + ', angle ' + currentMove.angle +
+        ' (attempt ' + currentMove.attempt + '/' + commandMoveMaxRetries + ')');
+    stickUsb.vnBlindSetPosition(currentMove.device, currentMove.position, currentMove.angle);
+    currentMove.confirmTimer = setTimeout(function () {
+        log.warn('Move confirmation timeout for ' + currentMove.device);
+        handleMoveResult(currentMove.device, 'confirm-timeout');
+    }, commandMoveConfirmTimeoutMs);
+}
+
+function handleMoveResult(device, error) {
+    if (!currentMove || String(currentMove.device) !== String(device)) {
+        return;
+    }
+
+    clearCurrentMoveConfirmTimer();
+
+    if (!error) {
+        log.debug('Move confirmed for ' + device);
+        advanceMoveQueue();
+        return;
+    }
+
+    log.warn('Move not confirmed for ' + device + ': ' + error +
+        ' (attempt ' + currentMove.attempt + '/' + commandMoveMaxRetries + ')');
+    if (currentMove.attempt < commandMoveMaxRetries) {
+        currentMove.attempt++;
+        sendCurrentMove();
+        return;
+    }
+
+    log.error('Move failed for ' + device + ' after ' + commandMoveMaxRetries + ' attempts');
+    advanceMoveQueue();
+}
+
+function cancelCurrentMove(device) {
+    if (currentMove && String(currentMove.device) === String(device)) {
+        finishCurrentMove();
+        processMoveQueue();
+    }
+}
+
+function processMoveQueue() {
+    if (moveQueueBusy || moveQueue.length === 0) {
+        return;
+    }
+
+    moveQueueBusy = true;
+    const next = moveQueue.shift();
+    currentMove = {
+        device: next.device,
+        position: next.position,
+        angle: next.angle,
+        attempt: 1,
+        confirmTimer: null,
+    };
+    sendCurrentMove();
+}
+
+function enqueueBlindMove(device, position, angle) {
+    const existing = moveQueue.findIndex(function (item) {
+        return item.device === device;
+    });
+    const entry = { device: device, position: position, angle: angle };
+
+    if (existing >= 0) {
+        moveQueue[existing] = entry;
+    } else {
+        moveQueue.push(entry);
+    }
+
+    processMoveQueue();
+}
+
 function requestBlindMove(device, updates) {
     const state = getDeviceState(device);
 
@@ -67,8 +183,7 @@ function requestBlindMove(device, updates) {
     pending.timer = setTimeout(function () {
         const target = pendingTargets[device];
         delete pendingTargets[device];
-        log.debug('Moving ' + device + ' to position ' + target.position + ', angle ' + target.angle);
-        stickUsb.vnBlindSetPosition(device, target.position, target.angle);
+        enqueueBlindMove(device, target.position, target.angle);
     }, commandDebounceMs);
 }
 
@@ -252,6 +367,7 @@ function callback(err, msg) {
             case 'wms-vb-init-completion':
                 log.info('Warema init completed')
 
+                stickUsb.setCmdConfirmationNotificationEnabled(true);
                 stickUsb.setPosUpdInterval(pollingInterval);
                 stickUsb.setWatchMovingBlindsInterval(movingInterval);
 
@@ -286,6 +402,9 @@ function callback(err, msg) {
                 client.publish('warema/' + msg.payload.weather.snr + '/wind/state', msg.payload.weather.wind.toString(), {retain: true})
                 client.publish('warema/' + msg.payload.weather.snr + '/rain/state', msg.payload.weather.rain ? 'ON' : 'OFF', {retain: true})
 
+                break;
+            case 'wms-vb-cmd-result-set-position':
+                handleMoveResult(msg.payload.snr, msg.payload.error || null);
                 break;
             case 'wms-vb-blind-position-update':
                 log.debug('Position update: \n' + JSON.stringify(msg.payload, null, 2))
@@ -402,6 +521,8 @@ client.on('message', function (topic, message) {
                         clearTimeout(pendingTargets[device].timer);
                         delete pendingTargets[device];
                     }
+                    removeDeviceFromMoveQueue(device);
+                    cancelCurrentMove(device);
                     stickUsb.vnBlindStop(device);
                     break;
             }

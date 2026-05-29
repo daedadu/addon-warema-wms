@@ -1,6 +1,6 @@
 {
   "name": "Warema Bridge",
-  "version": "0.2.3",
+  "version": "0.2.5",
   "slug": "warema-bridge",
   "init": false,
   "description": "Control your Warema WMS system",

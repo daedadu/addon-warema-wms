@@ -870,7 +870,7 @@ class Stick {
         function vnBlindSetPositionCompletion(error, wmsMsgSend, wmsMsgRcv) {
             privateHandleWmsCompletionGeneric(error, wmsMsgSend, wmsMsgRcv);
 
-            if (this.enableCmdConfirmationNotification) {
+            if (stickObj.enableCmdConfirmationNotification) {
                 stickObj.callback(error, {
                     topic: "wms-vb-cmd-result-set-position", payload: {
                         error: error,
@@ -915,7 +915,7 @@ class Stick {
         function vnBlindGetPositionCompletion(error, wmsMsgSend, wmsMsgRcv) {
             privateHandleWmsCompletionGeneric(error, wmsMsgSend, wmsMsgRcv);
 
-            if (this.enableCmdConfirmationNotification && options.cmdConfirmation) {
+            if (stickObj.enableCmdConfirmationNotification && options.cmdConfirmation) {
                 stickObj.callback(error, {
                     topic: "wms-vb-cmd-result-get-position", payload: {
                         error: error,
@@ -973,7 +973,7 @@ class Stick {
             function vnBlindStopCompletion(error, wmsMsgSend, wmsMsgRcv) {
                 privateHandleWmsCompletionGeneric(error, wmsMsgSend, wmsMsgRcv);
 
-                if (this.enableCmdConfirmationNotification) {
+                if (stickObj.enableCmdConfirmationNotification) {
                     stickObj.callback(error, {
                         topic: "wms-vb-cmd-result-stop",
                         payload: {error: error, snr: blind.snr, snrHex: blind.snrHex, name: blind.name}
